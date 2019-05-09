@@ -34,21 +34,23 @@ causalForest <- function(formula, data, treatment,
                          propensity, control, split.alpha = 0.5, cv.alpha = 0.5,
                          sample.size.total = floor(nrow(data) / 10), sample.size.train.frac = .5,
                          mtry = ceiling(ncol(data)/3), nodesize = 1, num.trees=nrow(data),
-                         cost=F, weights=F,ncolx,ncov_sample) {
+                         cost=F, weights=F,ncolx,ncov_sample, cluster, clustervar) {
   
   # do not implement subset option of causalTree, that is inherited from rpart but have not implemented it here yet
   vars <- all.vars(formula)
   y <- vars[1]
   x <- vars[2:length(vars)]
   treatmentdf <- data.frame(treatment)
+  clustervar <- data.frame(clustervar)
   if(class(data)[1]=="data.table"){
     treatmentdt <- data.table(treatment)
+    clusterdt <- data.table(clustervar)
     datax<-data[,..x]
     datay<-data[,y,with=FALSE]
-    data <- cbind(datax,datay, treatmentdt)
+    data <- cbind(datax,datay, treatmentdt, clusterdt)
   }else if(class(data)=="data.frame"){
     data <- data[, c(x, y)]
-    data <- cbind(data, treatmentdf)
+    data <- cbind(data, treatmentdf, clustervar)
   }
   
   num.obs <-nrow(data)
@@ -70,8 +72,22 @@ causalForest <- function(formula, data, treatment,
     full.idx <- sample.int(num.obs, sample.size, replace = FALSE)
     
     if(double.Sample) {
-      train.idx <- full.idx[1:train.size]
-      reestimation.idx <- full.idx[(train.size+1):sample.size]
+      if(cluster){
+        # We sample from within schools
+        df <- clustervar
+        # Draw bootstrap sample
+        df <- sample_frac(df, 1L, replace = TRUE)
+        num.obs <-nrow(data)
+        df$id <- seq(1, num.obs)
+        colnames(df) <- c("clustervar","id")
+        # Sample 50% from each cluster
+        sample <- df %>% group_by(clustervar) %>% sample_frac(0.5, replace = FALSE)
+        train.idx <- sample$id
+        reestimation.idx <- subset(df$id, !(df$id %in% c(train.idx)))
+      } else {
+        train.idx <- full.idx[1:train.size]
+        reestimation.idx <- full.idx[(train.size+1):sample.size]  
+      }
     }
     
     #randomize over the covariates for splitting (both train and reestimation)
@@ -121,6 +137,15 @@ causalForest <- function(formula, data, treatment,
       if (double.Sample) {
           dataTree <- data.frame(data[train.idx,])
           dataEstim <- data.frame(data[reestimation.idx,])
+          print(paste0("Sample size is: ", num.obs))
+          print(paste0("Number of training examples is: ", nrow(dataTree)))
+          print(paste0("Number of estimation examples is: ", nrow(dataEstim)))
+          print(paste0("% of treated in training sample is: ", round(mean(dataTree$treatment),3)))
+          print(paste0("% of treated in estimation sample is: ", round(mean(dataEstim$treatment),3)))
+          print(paste0("Number of clusters in training sample is: ",length(summary(as.factor(dataTree$clustervar),maxsum=500000))))
+          print(paste0("Number of clusters in estimation sample is: ",length(summary(as.factor(dataEstim$clustervar),maxsum=500000))))
+          print(paste0("Average cluster size in training sample is: ", round(mean(table(dataTree$clustervar)),3)))
+          print(paste0("Average cluster size in estimation sample is: ", round(mean(table(dataEstim$clustervar)),3)))
         }else{
           dataTree <- data.frame(data[full.idx,])
         }
